@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "buildCommand": "npm install",
+  "env": {
+    "NODE_ENV": "production"
+  },
+  "functions": {
+    "server.js": {
+      "maxDuration": 10
+    }
+  }
+}
