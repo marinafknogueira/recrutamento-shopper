@@ -24,6 +24,19 @@ if (!GOOGLE_CLIENT_ID || !JWT_SECRET) {
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 const app = express();
 
+let dbInitialized = false;
+async function ensureDbInit() {
+  if (!dbInitialized) {
+    try {
+      await init();
+      await ensureAdmin(ADMIN_EMAIL);
+      dbInitialized = true;
+    } catch (err) {
+      console.error('Database init error:', err);
+    }
+  }
+}
+
 // CORS para produção no Vercel
 const allowedOrigins = [
   'http://localhost:3000',
@@ -78,6 +91,14 @@ const apiLimiter = rateLimit({
 
 app.use('/api/auth/', authLimiter);
 app.use('/api/', apiLimiter);
+
+// Middleware para garantir DB iniciado
+app.use((req, res, next) => {
+  ensureDbInit().then(() => next()).catch(err => {
+    console.error('DB init middleware error:', err);
+    next();
+  });
+});
 
 // ---------- Utilities ----------
 
@@ -442,17 +463,15 @@ app.get('/api/score', authMiddleware, requireRole('talentos', 'admin'), asyncRou
 
 // ---------- Start ----------
 
-// Inicializar banco de dados
-init()
-  .then(() => ensureAdmin(ADMIN_EMAIL))
-  .catch((err) => {
-    console.error('Falha ao conectar ao banco de dados:', err);
-  });
-
 // Para desenvolvimento local
 if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => {
-    console.log(`Servidor rodando na porta ${PORT}`);
+  ensureDbInit().then(() => {
+    app.listen(PORT, () => {
+      console.log(`Servidor rodando na porta ${PORT}`);
+    });
+  }).catch((err) => {
+    console.error('Falha ao iniciar servidor:', err);
+    process.exit(1);
   });
 }
 
