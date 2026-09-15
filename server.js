@@ -16,8 +16,19 @@ const {
   NODE_ENV = 'development',
 } = process.env;
 
+console.log('[STARTUP] Checking env vars:', {
+  GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID ? 'SET' : 'MISSING',
+  JWT_SECRET: JWT_SECRET ? 'SET' : 'MISSING',
+  COMPANY_DOMAIN: COMPANY_DOMAIN ? 'SET' : 'MISSING',
+  ADMIN_EMAIL: ADMIN_EMAIL ? 'SET' : 'MISSING',
+  NODE_ENV,
+  DATABASE_URL: process.env.DATABASE_URL ? 'SET' : 'MISSING',
+});
+
 if (!GOOGLE_CLIENT_ID || !JWT_SECRET) {
   console.error('ERRO: configure GOOGLE_CLIENT_ID e JWT_SECRET no arquivo .env (veja .env.example)');
+  console.error('GOOGLE_CLIENT_ID:', GOOGLE_CLIENT_ID);
+  console.error('JWT_SECRET:', JWT_SECRET);
   process.exit(1);
 }
 
