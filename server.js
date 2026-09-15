@@ -442,14 +442,19 @@ app.get('/api/score', authMiddleware, requireRole('talentos', 'admin'), asyncRou
 
 // ---------- Start ----------
 
+// Inicializar banco de dados
 init()
   .then(() => ensureAdmin(ADMIN_EMAIL))
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Servidor rodando na porta ${PORT}`);
-    });
-  })
   .catch((err) => {
-    console.error('Falha ao iniciar o servidor / conectar ao banco de dados:', err);
-    process.exit(1);
+    console.error('Falha ao conectar ao banco de dados:', err);
   });
+
+// Para desenvolvimento local
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`Servidor rodando na porta ${PORT}`);
+  });
+}
+
+// Exportar para Vercel serverless
+module.exports = app;
