@@ -24,26 +24,6 @@ if (!GOOGLE_CLIENT_ID || !JWT_SECRET) {
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 const app = express();
 
-let dbInitPromise = null;
-
-function getDbInitPromise() {
-  if (!dbInitPromise) {
-    dbInitPromise = (async () => {
-      try {
-        console.log('[DB] Initializing...');
-        await init();
-        console.log('[DB] Connected');
-        await ensureAdmin(ADMIN_EMAIL);
-        console.log('[DB] Admin verified');
-      } catch (err) {
-        console.error('[DB] Init failed:', err.message);
-        throw err;
-      }
-    })();
-  }
-  return dbInitPromise;
-}
-
 // CORS para produção no Vercel
 const allowedOrigins = [
   'http://localhost:3000',
@@ -99,17 +79,6 @@ const apiLimiter = rateLimit({
 app.use('/api/auth/', authLimiter);
 app.use('/api/', apiLimiter);
 
-// Middleware para inicializar DB na primeira requisição
-let dbInitStarted = false;
-app.use((req, res, next) => {
-  if (!dbInitStarted) {
-    dbInitStarted = true;
-    console.log('[Init] Starting DB initialization on first request');
-    getDbInitPromise().catch(err => console.error('[Init] Failed:', err));
-  }
-  next();
-});
-
 // ---------- Utilities ----------
 
 function getClientIp(req) {
@@ -144,38 +113,53 @@ function requireRole(...roles) {
 
 function asyncRoute(fn) {
   return (req, res) => fn(req, res).catch((err) => {
-    console.error(err);
-    res.status(500).json({ error: 'Erro interno do servidor' });
+    console.error('[ERROR]', err.message, err.stack);
+    res.status(500).json({ error: 'Erro interno do servidor', details: err.message });
   });
 }
 
 app.post('/api/auth/google', asyncRoute(async (req, res) => {
+  console.log('[LOGIN] Received login request');
   const { credential } = req.body;
   if (!credential) return res.status(400).json({ error: 'Credencial ausente' });
 
-  const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: GOOGLE_CLIENT_ID }).catch(() => null);
+  console.log('[LOGIN] Verifying Google token...');
+  const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: GOOGLE_CLIENT_ID }).catch((err) => {
+    console.error('[LOGIN] Google verification failed:', err.message);
+    return null;
+  });
   if (!ticket) return res.status(401).json({ error: 'Falha ao validar login do Google' });
 
   const payload = ticket.getPayload();
   const email = (payload.email || '').toLowerCase();
   const domain = email.split('@')[1];
 
+  console.log('[LOGIN] Email:', email, 'Domain:', domain);
+
   if (COMPANY_DOMAIN && domain !== COMPANY_DOMAIN.toLowerCase()) {
+    console.log('[LOGIN] Domain mismatch. Expected:', COMPANY_DOMAIN, 'Got:', domain);
     return res.status(403).json({ error: 'Use seu e-mail corporativo para entrar.' });
   }
 
+  console.log('[LOGIN] Querying database for user...');
   const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
   const user = rows[0];
+
   if (!user) {
+    console.log('[LOGIN] User not found in database');
     return res.status(403).json({ error: 'Seu e-mail ainda nao tem acesso liberado. Fale com o administrador.' });
   }
 
+  console.log('[LOGIN] User found:', user.email, user.role);
+
   if (payload.name && payload.name !== user.name) {
     await pool.query('UPDATE users SET name = $1 WHERE email = $2', [payload.name, email]);
+    console.log('[LOGIN] Updated name for user');
   }
 
   const token = signSession({ email: user.email, role: user.role, name: payload.name || user.name });
   res.cookie('session', token, { httpOnly: true, sameSite: 'lax', secure: true, maxAge: 12 * 60 * 60 * 1000 });
+  console.log('[LOGIN] Success for:', email);
   res.json({ email: user.email, role: user.role, name: payload.name || user.name });
 }));
 
@@ -475,14 +459,17 @@ app.get('/api/score', authMiddleware, requireRole('talentos', 'admin'), asyncRou
 
 // Para desenvolvimento local
 if (process.env.NODE_ENV !== 'production') {
-  ensureDbInit().then(() => {
-    app.listen(PORT, () => {
-      console.log(`Servidor rodando na porta ${PORT}`);
+  init()
+    .then(() => ensureAdmin(ADMIN_EMAIL))
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(`Servidor rodando na porta ${PORT}`);
+      });
+    })
+    .catch((err) => {
+      console.error('Falha ao iniciar servidor:', err);
+      process.exit(1);
     });
-  }).catch((err) => {
-    console.error('Falha ao iniciar servidor:', err);
-    process.exit(1);
-  });
 }
 
 // Exportar para Vercel serverless
