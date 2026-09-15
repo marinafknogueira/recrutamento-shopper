@@ -1,27 +1,35 @@
 const { Pool } = require('pg');
 
-// Em produção no Cloud Run, a conexão é feita via socket do Cloud SQL
-// (INSTANCE_CONNECTION_NAME), sem precisar de host/porta.
-// Em desenvolvimento local, use DATABASE_URL (ex: via Cloud SQL Auth Proxy).
 const { DATABASE_URL, INSTANCE_CONNECTION_NAME, DB_USER, DB_PASSWORD, DB_NAME } = process.env;
 
 let pool;
-if (INSTANCE_CONNECTION_NAME) {
-  pool = new Pool({
-    host: `/cloudsql/${INSTANCE_CONNECTION_NAME}`,
-    user: DB_USER,
-    password: DB_PASSWORD,
-    database: DB_NAME,
-  });
-} else if (DATABASE_URL) {
-  pool = new Pool({ connectionString: DATABASE_URL });
-} else {
-  console.error('ERRO: configure DATABASE_URL (local) ou INSTANCE_CONNECTION_NAME + DB_USER + DB_PASSWORD + DB_NAME (Cloud Run) no .env');
-  process.exit(1);
+
+function initPool() {
+  if (pool) return;
+
+  if (INSTANCE_CONNECTION_NAME) {
+    pool = new Pool({
+      host: `/cloudsql/${INSTANCE_CONNECTION_NAME}`,
+      user: DB_USER,
+      password: DB_PASSWORD,
+      database: DB_NAME,
+    });
+  } else if (DATABASE_URL) {
+    pool = new Pool({ connectionString: DATABASE_URL });
+  } else {
+    throw new Error('DATABASE_URL ou INSTANCE_CONNECTION_NAME não configurados');
+  }
+}
+
+// Lazy init on first use
+function getPool() {
+  if (!pool) initPool();
+  return pool;
 }
 
 async function init() {
-  await pool.query(`
+  const p = getPool();
+  await p.query(`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
@@ -92,19 +100,28 @@ async function init() {
 async function ensureAdmin(email) {
   if (!email) return;
   const lower = email.toLowerCase();
-  const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [lower]);
+  const p = getPool();
+  const { rows } = await p.query('SELECT * FROM users WHERE email = $1', [lower]);
   if (rows.length === 0) {
-    await pool.query('INSERT INTO users (email, role, name) VALUES ($1, $2, $3)', [lower, 'admin', 'Admin']);
+    await p.query('INSERT INTO users (email, role, name) VALUES ($1, $2, $3)', [lower, 'admin', 'Admin']);
   } else if (rows[0].role !== 'admin') {
-    await pool.query('UPDATE users SET role = $1 WHERE email = $2', ['admin', lower]);
+    await p.query('UPDATE users SET role = $1 WHERE email = $2', ['admin', lower]);
   }
 }
 
 async function logAudit(action, adminEmail, targetEmail, oldValue, newValue, details, ipAddress) {
-  await pool.query(
+  const p = getPool();
+  await p.query(
     'INSERT INTO admin_audit_log (action, admin_email, target_email, old_value, new_value, details, ip_address) VALUES ($1, $2, $3, $4, $5, $6, $7)',
     [action, adminEmail, targetEmail, oldValue, newValue, details, ipAddress]
   );
 }
 
-module.exports = { pool, init, ensureAdmin, logAudit };
+// Proxy para que pool.query() sempre retorne a pool inicializada
+const poolProxy = {
+  query(...args) {
+    return getPool().query(...args);
+  },
+};
+
+module.exports = { pool: poolProxy, init, ensureAdmin, logAudit };
