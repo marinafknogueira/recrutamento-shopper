@@ -5,26 +5,24 @@ const jwt = require('jsonwebtoken');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
 const { OAuth2Client } = require('google-auth-library');
-const { pool, init, ensureAdmin, logAudit } = require('./db');
+const { pool, init, ensureAdmin, logAudit } = require('../db');
 
 const {
   GOOGLE_CLIENT_ID,
   COMPANY_DOMAIN,
   ADMIN_EMAIL,
   JWT_SECRET,
-  PORT = 3000,
   NODE_ENV = 'development',
 } = process.env;
 
 if (!GOOGLE_CLIENT_ID || !JWT_SECRET) {
-  console.error('ERRO: configure GOOGLE_CLIENT_ID e JWT_SECRET no arquivo .env (veja .env.example)');
+  console.error('ERRO: configure GOOGLE_CLIENT_ID e JWT_SECRET');
   process.exit(1);
 }
 
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 const app = express();
 
-// CORS para produção no Vercel
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:8080',
@@ -43,7 +41,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// HTTPS redirect em produção (Vercel)
 if (NODE_ENV === 'production' && process.env.VERCEL) {
   app.use((req, res, next) => {
     if (req.header('x-forwarded-proto') !== 'https') {
@@ -57,9 +54,8 @@ if (NODE_ENV === 'production' && process.env.VERCEL) {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, '../public')));
 
-// Rate limiting para autenticação
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -68,7 +64,6 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// Rate limiting para API geral
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 100,
@@ -79,13 +74,9 @@ const apiLimiter = rateLimit({
 app.use('/api/auth/', authLimiter);
 app.use('/api/', apiLimiter);
 
-// ---------- Utilities ----------
-
 function getClientIp(req) {
   return req.headers['x-forwarded-for']?.split(',')[0] || req.connection.remoteAddress || 'unknown';
 }
-
-// ---------- Auth ----------
 
 function signSession(user) {
   return jwt.sign({ email: user.email, role: user.role, name: user.name }, JWT_SECRET, { expiresIn: '12h' });
@@ -161,8 +152,6 @@ app.get('/api/config', (req, res) => {
   res.json({ googleClientId: GOOGLE_CLIENT_ID, companyDomain: COMPANY_DOMAIN || null });
 });
 
-// ---------- Users (admin only) ----------
-
 app.get('/api/users', authMiddleware, requireRole('admin'), asyncRoute(async (req, res) => {
   const { rows } = await pool.query('SELECT email, name, role, created_at FROM users ORDER BY created_at DESC');
   res.json(rows);
@@ -200,7 +189,6 @@ app.delete('/api/users/:email', authMiddleware, requireRole('admin'), asyncRoute
   res.json({ ok: true });
 }));
 
-// Audit log (admin only)
 app.get('/api/audit-log', authMiddleware, requireRole('admin'), asyncRoute(async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || 100), 1000);
   const { rows } = await pool.query(
@@ -209,8 +197,6 @@ app.get('/api/audit-log', authMiddleware, requireRole('admin'), asyncRoute(async
   );
   res.json(rows);
 }));
-
-// ---------- Jobs ----------
 
 const JOB_FIELDS = [
   'cargo', 'senioridade', 'setor', 'centro_custo', 'requisitos', 'responsabilidades',
@@ -230,7 +216,6 @@ async function getJob(id) {
   return rows[0];
 }
 
-// Criar vaga (gestor ou admin) - comeca como rascunho
 app.post('/api/jobs', authMiddleware, requireRole('gestor', 'admin'), asyncRoute(async (req, res) => {
   const body = req.body;
   for (const f of JOB_FIELDS) {
@@ -258,7 +243,6 @@ app.post('/api/jobs', authMiddleware, requireRole('gestor', 'admin'), asyncRoute
   res.json(job);
 }));
 
-// Editar vaga (dono gestor, apenas em rascunho/reprovada, ou admin a qualquer momento)
 app.put('/api/jobs/:id', authMiddleware, asyncRoute(async (req, res) => {
   const job = await getJob(req.params.id);
   if (!job) return res.status(404).json({ error: 'Vaga nao encontrada' });
@@ -282,7 +266,6 @@ app.put('/api/jobs/:id', authMiddleware, asyncRoute(async (req, res) => {
   res.json(await getJob(job.id));
 }));
 
-// Gestor envia para aprovacao do CEO
 app.post('/api/jobs/:id/submit', authMiddleware, requireRole('gestor', 'admin'), asyncRoute(async (req, res) => {
   const job = await getJob(req.params.id);
   if (!job) return res.status(404).json({ error: 'Vaga nao encontrada' });
@@ -297,7 +280,6 @@ app.post('/api/jobs/:id/submit', authMiddleware, requireRole('gestor', 'admin'),
   res.json(await getJob(job.id));
 }));
 
-// CEO aprova
 app.post('/api/jobs/:id/approve', authMiddleware, requireRole('ceo', 'admin'), asyncRoute(async (req, res) => {
   const job = await getJob(req.params.id);
   if (!job) return res.status(404).json({ error: 'Vaga nao encontrada' });
@@ -309,7 +291,6 @@ app.post('/api/jobs/:id/approve', authMiddleware, requireRole('ceo', 'admin'), a
   res.json(await getJob(job.id));
 }));
 
-// CEO reprova
 app.post('/api/jobs/:id/reject', authMiddleware, requireRole('ceo', 'admin'), asyncRoute(async (req, res) => {
   const job = await getJob(req.params.id);
   if (!job) return res.status(404).json({ error: 'Vaga nao encontrada' });
@@ -322,7 +303,6 @@ app.post('/api/jobs/:id/reject', authMiddleware, requireRole('ceo', 'admin'), as
   res.json(await getJob(job.id));
 }));
 
-// Talentos define prioridade e responsavel, movendo para em_recrutamento
 app.post('/api/jobs/:id/priorizar', authMiddleware, requireRole('talentos', 'admin'), asyncRoute(async (req, res) => {
   const job = await getJob(req.params.id);
   if (!job) return res.status(404).json({ error: 'Vaga nao encontrada' });
@@ -341,7 +321,6 @@ app.post('/api/jobs/:id/priorizar', authMiddleware, requireRole('talentos', 'adm
   res.json(await getJob(job.id));
 }));
 
-// Talentos/admin marca como preenchida ou encerrada
 app.post('/api/jobs/:id/status', authMiddleware, requireRole('talentos', 'admin'), asyncRoute(async (req, res) => {
   const job = await getJob(req.params.id);
   if (!job) return res.status(404).json({ error: 'Vaga nao encontrada' });
@@ -357,7 +336,6 @@ app.post('/api/jobs/:id/status', authMiddleware, requireRole('talentos', 'admin'
   res.json(await getJob(job.id));
 }));
 
-// Listar vagas - visibilidade por papel
 app.get('/api/jobs', authMiddleware, asyncRoute(async (req, res) => {
   let rows;
   if (req.user.role === 'admin' || req.user.role === 'ceo') {
@@ -382,17 +360,13 @@ app.get('/api/jobs/:id', authMiddleware, asyncRoute(async (req, res) => {
   res.json({ ...job, history });
 }));
 
-// ---------- Pontuação (metas de contratação do time de Talentos) ----------
-
 const SENIORIDADES = ['Estagiário', 'Júnior', 'Pleno', 'Sênior', 'Especialista', 'Coordenação', 'Gerência', 'Diretoria'];
 const META_EQUIPE_SEMESTRE = 800;
 
-// Pontos por senioridade para vagas fora de Tecnologia
 const PONTOS_OUTRAS_AREAS = {
   'Estagiário': 6, 'Júnior': 6, 'Pleno': 6, 'Sênior': 6,
   'Especialista': 15, 'Coordenação': 15, 'Gerência': 15, 'Diretoria': 15,
 };
-// Pontos por senioridade para vagas de Tecnologia
 const PONTOS_TECNOLOGIA = {
   'Estagiário': 6, 'Júnior': 10, 'Pleno': 10, 'Sênior': 15,
   'Especialista': 15, 'Coordenação': 15, 'Gerência': 15, 'Diretoria': 15,
@@ -404,7 +378,6 @@ function pontosPorVaga(job) {
   return base * (job.quantidade_vagas || 1);
 }
 
-// Só Talentos e Admin acessam pontuação. Individual só aparece para a própria pessoa e para o Admin.
 app.get('/api/score', authMiddleware, requireRole('talentos', 'admin'), asyncRoute(async (req, res) => {
   const { rows: jobs } = await pool.query(
     "SELECT setor, senioridade, quantidade_vagas, responsavel_talentos FROM jobs WHERE status = 'preenchida'"
@@ -440,16 +413,13 @@ app.get('/api/score', authMiddleware, requireRole('talentos', 'admin'), asyncRou
   res.json(result);
 }));
 
-// ---------- Start ----------
-
 init()
   .then(() => ensureAdmin(ADMIN_EMAIL))
   .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Servidor rodando na porta ${PORT}`);
-    });
+    console.log(`App iniciado`);
   })
   .catch((err) => {
-    console.error('Falha ao iniciar o servidor / conectar ao banco de dados:', err);
-    process.exit(1);
+    console.error('Falha ao iniciar:', err);
   });
+
+module.exports = app;
