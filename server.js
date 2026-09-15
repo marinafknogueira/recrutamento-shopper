@@ -24,17 +24,24 @@ if (!GOOGLE_CLIENT_ID || !JWT_SECRET) {
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 const app = express();
 
-let dbInitialized = false;
-async function ensureDbInit() {
-  if (!dbInitialized) {
-    try {
-      await init();
-      await ensureAdmin(ADMIN_EMAIL);
-      dbInitialized = true;
-    } catch (err) {
-      console.error('Database init error:', err);
-    }
+let dbInitPromise = null;
+
+function getDbInitPromise() {
+  if (!dbInitPromise) {
+    dbInitPromise = (async () => {
+      try {
+        console.log('[DB] Initializing...');
+        await init();
+        console.log('[DB] Connected');
+        await ensureAdmin(ADMIN_EMAIL);
+        console.log('[DB] Admin verified');
+      } catch (err) {
+        console.error('[DB] Init failed:', err.message);
+        throw err;
+      }
+    })();
   }
+  return dbInitPromise;
 }
 
 // CORS para produção no Vercel
@@ -92,12 +99,15 @@ const apiLimiter = rateLimit({
 app.use('/api/auth/', authLimiter);
 app.use('/api/', apiLimiter);
 
-// Middleware para garantir DB iniciado
+// Middleware para inicializar DB na primeira requisição
+let dbInitStarted = false;
 app.use((req, res, next) => {
-  ensureDbInit().then(() => next()).catch(err => {
-    console.error('DB init middleware error:', err);
-    next();
-  });
+  if (!dbInitStarted) {
+    dbInitStarted = true;
+    console.log('[Init] Starting DB initialization on first request');
+    getDbInitPromise().catch(err => console.error('[Init] Failed:', err));
+  }
+  next();
 });
 
 // ---------- Utilities ----------
